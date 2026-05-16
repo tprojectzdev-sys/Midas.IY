@@ -6483,7 +6483,7 @@ local TeleportCheck = false
 Players.LocalPlayer.OnTeleport:Connect(function(State)
 	if KeepInfYield and (not TeleportCheck) and queueteleport then
 		TeleportCheck = true
-		queueteleport("loadstring(game:HttpGet('https://raw.githubusercontent.com/YOURUSERNAME/midas/main/midas.lua'))()")
+		queueteleport("loadstring(game:HttpGet('https://raw.githubusercontent.com/tprojectzdev-sys/Midas.IY/main/midas.lua'))()")
 	end
 end)
 
@@ -13228,13 +13228,13 @@ end)
 
 task.spawn(function()
 	local success, latestVersionInfo = pcall(function() 
-		local versionJson = game:HttpGet("https://raw.githubusercontent.com/YOURUSERNAME/midas/main/version")
+		local versionJson = game:HttpGet("https://raw.githubusercontent.com/tprojectzdev-sys/Midas.IY/main/version")
 		return HttpService:JSONDecode(versionJson)
 	end)
 
 	if success then
 		if currentVersion ~= latestVersionInfo.Version then
-			notify("Outdated", "Get the new version at raw.githubusercontent.com/YOURUSERNAME/midas/main/midas.lua")
+			notify("Outdated", "Get the new version at https://raw.githubusercontent.com/tprojectzdev-sys/Midas.IY/main/midas.lua")
 		end
 
 		if latestVersionInfo.Announcement and latestVersionInfo.Announcement ~= "" then
