@@ -104,6 +104,364 @@ isLegacyChat = TextChatService.ChatVersion == Enum.ChatVersion.LegacyChatService
     return gethidden(workspace, "RejectCharacterDeletions") ~= Enum.RejectCharacterDeletions.Disabled
 end)) or false]]
 
+-- MIDAS KEY VALIDATION GATE START
+do
+	local VALIDATE_URL = "https://YOUR-RAILWAY-URL.up.railway.app/validate"
+	local KEY_FILE = "MIDAS.key"
+	local MAX_ATTEMPTS = 3
+	local UI_WAIT_SECONDS = 600
+
+	local function gateNotify(title, text)
+		pcall(function()
+			StarterGui:SetCore("SendNotification", {
+				Title = tostring(title),
+				Text = tostring(text or ""),
+				Duration = 8,
+			})
+		end)
+	end
+
+	local function trimKey(key)
+		if type(key) ~= "string" then
+			return ""
+		end
+		return (key:gsub("^%s+", ""):gsub("%s+$", ""))
+	end
+
+	local function deleteKeyFile()
+		if type(deletefile) == "function" then
+			pcall(deletefile, KEY_FILE)
+		end
+	end
+
+	local function saveKeyFile(key)
+		pcall(function()
+			writefile(KEY_FILE, key, true)
+		end)
+	end
+
+	local function readKeyFile()
+		if not isfile or not isfile(KEY_FILE) then
+			return nil
+		end
+		local readOk, content = readfile(KEY_FILE, true)
+		if readOk and type(content) == "string" then
+			local trimmed = trimKey(content)
+			if trimmed ~= "" then
+				return trimmed
+			end
+		end
+		return nil
+	end
+
+	local function getHwid()
+		local hwid
+		pcall(function()
+			hwid = game:GetService("RbxAnalyticsService"):GetClientId()
+		end)
+		if hwid and tostring(hwid) ~= "" then
+			return tostring(hwid)
+		end
+		return tostring(Players.LocalPlayer.UserId)
+	end
+
+	local function getResponseStatus(response)
+		return response.StatusCode or response.Status or response.status
+	end
+
+	local function getResponseBody(response)
+		return response.Body or response.body or ""
+	end
+
+	local function parseValidateResponse(response)
+		if type(response) ~= "table" then
+			return nil, "invalid_response"
+		end
+		local statusCode = getResponseStatus(response)
+		local body = getResponseBody(response)
+		local decodeOk, data = pcall(function()
+			return HttpService:JSONDecode(body)
+		end)
+		if not decodeOk or type(data) ~= "table" then
+			if statusCode and statusCode ~= 200 then
+				return nil, "http"
+			end
+			return nil, "invalid_response"
+		end
+		if statusCode and statusCode ~= 200 then
+			if data.valid == false and data.error ~= nil then
+				return data, "json_error"
+			end
+			return nil, "http"
+		end
+		return data, "ok"
+	end
+
+	local function handleInvalidResponse(data)
+		local err = data.error
+		if err == "MAINTENANCE" then
+			gateNotify("MIDAS", "MIDAS is under maintenance. Try again later.")
+			return "halt_keep_key"
+		end
+		if err == "Key is bound to another device" then
+			deleteKeyFile()
+			gateNotify("MIDAS", "Key is bound to another device (HWID mismatch)")
+			return "halt"
+		end
+		deleteKeyFile()
+		if type(err) == "string" and err ~= "" then
+			gateNotify("MIDAS", err)
+		else
+			gateNotify("MIDAS", "Invalid or expired key")
+		end
+		return "retry"
+	end
+
+	local function validateKey(key)
+		key = trimKey(key)
+		if key == "" then
+			gateNotify("MIDAS", "Please enter a valid key")
+			return false, "empty"
+		end
+
+		local requestOk, response = pcall(function()
+			return httprequest({
+				Url = VALIDATE_URL,
+				Method = "POST",
+				Headers = {["Content-Type"] = "application/json"},
+				Body = HttpService:JSONEncode({
+					key = key,
+					hwid = getHwid(),
+					userId = Players.LocalPlayer.UserId,
+				}),
+			})
+		end)
+
+		if not requestOk or type(response) ~= "table" then
+			gateNotify("MIDAS", "Could not reach MIDAS servers")
+			return false, "network"
+		end
+
+		local data, parseKind = parseValidateResponse(response)
+		if not data then
+			if parseKind == "http" then
+				gateNotify("MIDAS", "Could not validate key")
+			else
+				gateNotify("MIDAS", "Invalid server response")
+			end
+			return false, parseKind
+		end
+
+		if data.valid == true then
+			saveKeyFile(key)
+			return true, "ok"
+		end
+
+		if data.valid == false then
+			local outcome = handleInvalidResponse(data)
+			if outcome == "halt_keep_key" then
+				return false, "maintenance"
+			elseif outcome == "halt" then
+				return false, "hwid"
+			end
+			return false, "invalid"
+		end
+
+		deleteKeyFile()
+		gateNotify("MIDAS", "Invalid server response")
+		return false, "invalid_response"
+	end
+
+	local function destroyGateGui(gui)
+		if gui then
+			pcall(function()
+				gui:Destroy()
+			end)
+		end
+	end
+
+	local function promptForKey()
+		local gui = Instance.new("ScreenGui")
+		gui.Name = "MIDASKeyGate"
+		gui.ResetOnSpawn = false
+		gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+		gui.IgnoreGuiInset = true
+		gui.DisplayOrder = 100000
+
+		local guiParent = COREGUI
+		if not guiParent then
+			guiParent = Players.LocalPlayer:WaitForChild("PlayerGui", 10)
+		end
+		if not guiParent then
+			gateNotify("MIDAS", "Could not create key UI")
+			destroyGateGui(gui)
+			return nil
+		end
+		gui.Parent = guiParent
+
+		local background = Instance.new("Frame")
+		background.Name = "Background"
+		background.Size = UDim2.fromScale(1, 1)
+		background.BackgroundColor3 = Color3.fromRGB(12, 12, 14)
+		background.BorderSizePixel = 0
+		background.Parent = gui
+
+		local panel = Instance.new("Frame")
+		panel.Name = "Panel"
+		panel.AnchorPoint = Vector2.new(0.5, 0.5)
+		panel.Position = UDim2.fromScale(0.5, 0.5)
+		panel.Size = UDim2.new(0, 360, 0, 180)
+		panel.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
+		panel.BorderSizePixel = 0
+		panel.Parent = background
+
+		local panelCorner = Instance.new("UICorner")
+		panelCorner.CornerRadius = UDim.new(0, 8)
+		panelCorner.Parent = panel
+
+		local title = Instance.new("TextLabel")
+		title.Name = "Title"
+		title.BackgroundTransparency = 1
+		title.Position = UDim2.new(0, 16, 0, 16)
+		title.Size = UDim2.new(1, -32, 0, 28)
+		title.Font = Enum.Font.GothamBold
+		title.Text = "MIDAS Key"
+		title.TextColor3 = Color3.fromRGB(240, 240, 245)
+		title.TextSize = 20
+		title.TextXAlignment = Enum.TextXAlignment.Left
+		title.Parent = panel
+
+		local keyBox = Instance.new("TextBox")
+		keyBox.Name = "KeyBox"
+		keyBox.ClearTextOnFocus = false
+		keyBox.Font = Enum.Font.Gotham
+		keyBox.PlaceholderText = "Enter your key"
+		keyBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+		keyBox.Position = UDim2.new(0, 16, 0, 56)
+		keyBox.Size = UDim2.new(1, -32, 0, 36)
+		keyBox.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+		keyBox.TextColor3 = Color3.fromRGB(235, 235, 240)
+		keyBox.TextSize = 16
+		keyBox.Text = ""
+		keyBox.Parent = panel
+
+		local keyCorner = Instance.new("UICorner")
+		keyCorner.CornerRadius = UDim.new(0, 6)
+		keyCorner.Parent = keyBox
+
+		local confirm = Instance.new("TextButton")
+		confirm.Name = "Confirm"
+		confirm.Font = Enum.Font.GothamSemibold
+		confirm.Text = "Confirm"
+		confirm.TextColor3 = Color3.fromRGB(18, 18, 22)
+		confirm.TextSize = 16
+		confirm.Position = UDim2.new(0, 16, 0, 108)
+		confirm.Size = UDim2.new(1, -32, 0, 40)
+		confirm.BackgroundColor3 = Color3.fromRGB(200, 170, 60)
+		confirm.BorderSizePixel = 0
+		confirm.Parent = panel
+
+		local confirmCorner = Instance.new("UICorner")
+		confirmCorner.CornerRadius = UDim.new(0, 6)
+		confirmCorner.Parent = confirm
+
+		local submittedKey = nil
+		local finished = false
+
+		local function finish(value)
+			if finished then
+				return
+			end
+			finished = true
+			submittedKey = value
+		end
+
+		confirm.MouseButton1Click:Connect(function()
+			local candidate = trimKey(keyBox.Text)
+			if candidate == "" then
+				gateNotify("MIDAS", "Please enter a valid key")
+				return
+			end
+			finish(candidate)
+		end)
+
+		keyBox.FocusLost:Connect(function(enterPressed)
+			if enterPressed then
+				local candidate = trimKey(keyBox.Text)
+				if candidate == "" then
+					gateNotify("MIDAS", "Please enter a valid key")
+					return
+				end
+				finish(candidate)
+			end
+		end)
+
+		local deadline = os.clock() + UI_WAIT_SECONDS
+		while not finished and os.clock() < deadline do
+			task.wait(0.1)
+		end
+
+		destroyGateGui(gui)
+		return submittedKey
+	end
+
+	local function shouldHaltAfterFailure(reason)
+		return reason == "network"
+			or reason == "http"
+			or reason == "invalid_response"
+			or reason == "maintenance"
+			or reason == "hwid"
+	end
+
+	if not httprequest then
+		gateNotify("MIDAS", "Your executor does not support HTTP requests")
+		return
+	end
+
+	local keyValidated = false
+	local savedKey = readKeyFile()
+	if savedKey then
+		local ok, reason = validateKey(savedKey)
+		if ok then
+			keyValidated = true
+		elseif shouldHaltAfterFailure(reason) then
+			return
+		end
+	end
+
+	local attempts = 0
+	while not keyValidated and attempts < MAX_ATTEMPTS do
+		local inputKey = promptForKey()
+		if not inputKey then
+			gateNotify("MIDAS", "Key entry cancelled or timed out")
+			return
+		end
+
+		local ok, reason = validateKey(inputKey)
+		if ok then
+			keyValidated = true
+			break
+		end
+
+		if reason == "empty" then
+			-- do not count empty submissions
+		elseif shouldHaltAfterFailure(reason) then
+			return
+		else
+			attempts = attempts + 1
+			if attempts >= MAX_ATTEMPTS then
+				gateNotify("MIDAS", "Too many failed attempts")
+				return
+			end
+		end
+	end
+
+	if not keyValidated then
+		return
+	end
+end
+-- MIDAS KEY VALIDATION GATE END
+
 -- MIDAS
 local iyassets = {
 	["midas/assets/bindsandplugins.png"] = "rbxassetid://5147695474",
