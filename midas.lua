@@ -106,7 +106,7 @@ end)) or false]]
 
 -- MIDAS KEY VALIDATION GATE START
 do
-	local VALIDATE_URL = "https://YOUR-RAILWAY-URL.up.railway.app/validate"
+	local VALIDATE_URL = "https://midas-key2-production.up.railway.app/validate"
 	local KEY_FILE = "MIDAS.key"
 	local MAX_ATTEMPTS = 3
 	local UI_WAIT_SECONDS = 600
@@ -154,15 +154,18 @@ do
 		return nil
 	end
 
-	local function getHwid()
+	local function getValidateIdentity()
+		local userId = tostring(Players.LocalPlayer.UserId)
 		local hwid
-		pcall(function()
+		local ok = pcall(function()
 			hwid = game:GetService("RbxAnalyticsService"):GetClientId()
 		end)
-		if hwid and tostring(hwid) ~= "" then
-			return tostring(hwid)
+		if not ok or not hwid or hwid == "" then
+			hwid = userId
+		else
+			hwid = tostring(hwid)
 		end
-		return tostring(Players.LocalPlayer.UserId)
+		return hwid, userId
 	end
 
 	local function getResponseStatus(response)
@@ -224,6 +227,7 @@ do
 			return false, "empty"
 		end
 
+		local hwid, userId = getValidateIdentity()
 		local requestOk, response = pcall(function()
 			return httprequest({
 				Url = VALIDATE_URL,
@@ -231,8 +235,8 @@ do
 				Headers = {["Content-Type"] = "application/json"},
 				Body = HttpService:JSONEncode({
 					key = key,
-					hwid = getHwid(),
-					userId = Players.LocalPlayer.UserId,
+					hwid = hwid,
+					userId = userId,
 				}),
 			})
 		end)
@@ -376,7 +380,15 @@ do
 			submittedKey = value
 		end
 
+		local uiReady = false
+		task.defer(function()
+			uiReady = true
+		end)
+
 		confirm.MouseButton1Click:Connect(function()
+			if not uiReady then
+				return
+			end
 			local candidate = trimKey(keyBox.Text)
 			if candidate == "" then
 				gateNotify("MIDAS", "Please enter a valid key")
@@ -386,14 +398,19 @@ do
 		end)
 
 		keyBox.FocusLost:Connect(function(enterPressed)
-			if enterPressed then
-				local candidate = trimKey(keyBox.Text)
-				if candidate == "" then
-					gateNotify("MIDAS", "Please enter a valid key")
-					return
-				end
-				finish(candidate)
+			if not uiReady or not enterPressed then
+				return
 			end
+			local candidate = trimKey(keyBox.Text)
+			if candidate == "" then
+				gateNotify("MIDAS", "Please enter a valid key")
+				return
+			end
+			finish(candidate)
+		end)
+
+		task.defer(function()
+			keyBox:CaptureFocus()
 		end)
 
 		local deadline = os.clock() + UI_WAIT_SECONDS
@@ -405,7 +422,11 @@ do
 		return submittedKey
 	end
 
-	local function shouldHaltAfterFailure(reason)
+	local function shouldHaltImmediately(reason)
+		return reason == "maintenance" or reason == "hwid"
+	end
+
+	local function shouldHaltManualAttempt(reason)
 		return reason == "network"
 			or reason == "http"
 			or reason == "invalid_response"
@@ -413,51 +434,65 @@ do
 			or reason == "hwid"
 	end
 
+	local function trySavedKey()
+		local savedKey = readKeyFile()
+		if not savedKey then
+			return false, nil
+		end
+		local ok, reason = validateKey(savedKey)
+		if ok then
+			return true, "ok"
+		end
+		if shouldHaltImmediately(reason) then
+			return false, reason
+		end
+		-- invalid / network / http / invalid_response: open manual UI (saved failure does not count as an attempt)
+		return false, reason
+	end
+
+	local function runManualKeyEntry()
+		local attempts = 0
+		while attempts < MAX_ATTEMPTS do
+			local inputKey = promptForKey()
+			if not inputKey then
+				gateNotify("MIDAS", "Key entry cancelled or timed out")
+				return false
+			end
+
+			local ok, reason = validateKey(inputKey)
+			if ok then
+				return true
+			end
+
+			if reason == "empty" then
+				-- rejected locally; do not count
+			elseif shouldHaltManualAttempt(reason) then
+				return false
+			else
+				attempts = attempts + 1
+				if attempts >= MAX_ATTEMPTS then
+					gateNotify("MIDAS", "Too many failed attempts")
+					return false
+				end
+			end
+		end
+		return false
+	end
+
 	if not httprequest then
 		gateNotify("MIDAS", "Your executor does not support HTTP requests")
 		return
 	end
 
-	local keyValidated = false
-	local savedKey = readKeyFile()
-	if savedKey then
-		local ok, reason = validateKey(savedKey)
-		if ok then
-			keyValidated = true
-		elseif shouldHaltAfterFailure(reason) then
-			return
-		end
-	end
-
-	local attempts = 0
-	while not keyValidated and attempts < MAX_ATTEMPTS do
-		local inputKey = promptForKey()
-		if not inputKey then
-			gateNotify("MIDAS", "Key entry cancelled or timed out")
-			return
-		end
-
-		local ok, reason = validateKey(inputKey)
-		if ok then
-			keyValidated = true
-			break
-		end
-
-		if reason == "empty" then
-			-- do not count empty submissions
-		elseif shouldHaltAfterFailure(reason) then
-			return
-		else
-			attempts = attempts + 1
-			if attempts >= MAX_ATTEMPTS then
-				gateNotify("MIDAS", "Too many failed attempts")
-				return
-			end
-		end
-	end
-
-	if not keyValidated then
+	local savedOk, savedReason = trySavedKey()
+	if savedOk then
+		-- key validated from MIDAS.key
+	elseif savedReason and shouldHaltImmediately(savedReason) then
 		return
+	else
+		if not runManualKeyEntry() then
+			return
+		end
 	end
 end
 -- MIDAS KEY VALIDATION GATE END
